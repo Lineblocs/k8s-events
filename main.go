@@ -144,6 +144,7 @@ func processEvent(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return 
 	}
+	region := os.Getenv("LINEBLOCS_REGION")
 	component := podResource.metadata.labels["component"]
 	name := podResource.metadata.name
 	ns := podResource.metadata.namespace
@@ -239,13 +240,58 @@ func processEvent(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				defer stmt.Close()
-				stmt.Exec( id)
-				defer stmt.Close()
 		}
 	} else if component == "opensips" {
 		switch phase := podResource.phase; phase {
 			case "Running": // upscale
+				var id string
+				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					stmt, err := db.Prepare("INSERT INTO sip_routers (`k8s_pod_id`, `name`, `ip_address`, `ip_address_range`, `private_ip_address`, `private_ip_range`, `region`) VALUES (?, ?, ?, ?, ?, ?)")
+
+
+					if err != nil {
+						fmt.Println("error occured: " + err.Error())
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					defer stmt.Close()
+					// check router IP
+					ip, err := GetContainerIP( clientset, name, ns )
+					if err != nil {
+						fmt.Println("error occured: " + err.Error())
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					ipRange:="/32"
+					_, err = stmt.Exec( name, ip, ipRange, ip, ipRange, region )
+					if err != nil {
+						fmt.Println("error occured: " + err.Error())
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+				}
 			case "Terminated": // downscale
+				var id string
+				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// doesnt exist
+					fmt.Println("error occured: " + err.Error())
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				stmt, err := db.Prepare("DELETE FROM sip_routers WHERE `k8s_pod_id` =?")
+
+
+				if err != nil {
+					fmt.Println("error occured: " + err.Error())
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				defer stmt.Close()
 		}
 	}
 }
