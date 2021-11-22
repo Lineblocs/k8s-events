@@ -6,12 +6,12 @@ import (
 	"database/sql"
 	"context"
 	"time"
-	"flag"
 	"errors"
 	"net/http"
+	"net/http/httputil"
+
 		"k8s.io/client-go/tools/clientcmd"
 	"encoding/json"
-		"path/filepath"
 			"github.com/gorilla/mux"
 	"github.com/gorilla/handlers"
 	_ "github.com/go-sql-driver/mysql"
@@ -19,26 +19,34 @@ import (
 	"k8s.io/client-go/kubernetes"
     v1 "k8s.io/api/core/v1"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/util/homedir"
 )
 
 var db* sql.DB;
 
 type PodMetadata struct {
-	generatedName string `json:"generatedName"`
-	labels map[string]string `json:"labels"`
-	name string `json:"name"`
-	namespace string `json:"name"`
+	GenerateName string `json:"generateName"`
+	Labels map[string]string `json:"labels"`
+	Name string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+type PodStatus struct {
+	Phase string `json:"phase"`
 }
 type PodResource struct {
-	kind string `json:"kind"`
-	metadata PodMetadata `json:"metadata"`
-	hostIp string `json:"hostIP"`
-	podIp string `json:"potIP"`
-	phase string `json:"phase"`
-	qosClass string `json:"qosClass"`
-	startTime string `json:"startTime"`
+	Kind string `json:"kind"`
+	Metadata PodMetadata `json:"metadata"`
+	HostIp string `json:"hostIP"`
+	PodIp string `json:"potIP"`
+	Status PodStatus `json:"status"`
+	Phase string `json:"phase"`
+	QosClass string `json:"qosClass"`
+	StartTime string `json:"startTime"`
 }
+type Event struct {
+	Pod PodResource `json:"pod"`
+}
+
+
 
 
 func ListNodes(clientset kubernetes.Interface) ([]v1.Node, error) {
@@ -65,16 +73,10 @@ func GetNodeByName(clientset kubernetes.Interface, name string, namespace string
 }
 
 func createK8sConfig() (kubernetes.Interface, error) {
-	var kubeconfig *string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-	flag.Parse()
-
+	var kubeconfig string
+	kubeconfig= "/root/.kube/config"
 	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, err
 	}
@@ -88,12 +90,13 @@ func createK8sConfig() (kubernetes.Interface, error) {
 }
 func GetContainerIP(clientset kubernetes.Interface, podName, namespace string) (string, error) {
     // creates the in-cluster config
+	fmt.Println("searching in NS: " + namespace)
     IP := ""
     for {
         if IP != "" {
             break
         } else {
-            log.Printf("No IP for now.\n")
+            //log.Printf("No IP for now.\n")
         }
 
 			ctx := context.Background()
@@ -102,8 +105,11 @@ func GetContainerIP(clientset kubernetes.Interface, podName, namespace string) (
 			return "", err
         }
 		ctx2 := context.Background()
+		found :=false
         for _, pod := range pods.Items {
+			fmt.Printf("matching pod %s to %s\r\n", podName, pod.Name)
 			if podName == pod.Name {
+				found = true
 				pod, err := clientset.CoreV1().Pods(namespace).Get(ctx2, pod.Name, metav1.GetOptions{})
 				if err != nil {
 					return "", err
@@ -121,178 +127,240 @@ func GetContainerIP(clientset kubernetes.Interface, podName, namespace string) (
 				}
 			}
         }
+		if !found {
+			return "", errors.New("pod does not exist...")
+		}
 
-        log.Printf("Waits...\n")
+        //log.Printf("Waits...\n")
         time.Sleep(1 * time.Second)
     }
     return "", errors.New("Could not fetch IP")
 }
 
+// formatRequest generates ascii representation of a request
+func formatRequest(r *http.Request) (string, error) {
+	res, err := httputil.DumpRequest(r, true)  
+	if err != nil {  
+		log.Fatal(err)  
+		return  "", err
+	}  
+	 return string(res), nil
+
+}
+
+func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name, ns, phase string) (error) {
+	region := os.Getenv("LINEBLOCS_REGION")
+	if component == "asterisk" {
+		switch ; phase {
+			case "Running": // upscale
+				var id string
+				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", name)
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					fmt.Println("creating media server " + name)
+					stmt, err := db.Prepare("INSERT INTO media_servers (`k8s_pod_id`, `name`, `ip_address`, `ip_address_range`, `private_ip_address`, `private_ip_address_range`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+
+
+					if err != nil {
+						return err
+					}
+					// check media server IP
+					ip, err := GetContainerIP( clientset, name, ns )
+					if err != nil {
+						return err
+					}
+
+					// add 5160 for media servers
+					ip = ip + ":5160"
+					ipRange:="/32"
+					now :=time.Now()
+					res, err := stmt.Exec( name,name, ip, ipRange, ip, ipRange, now,now )
+					if err != nil {
+						return err
+					}
+					mediaServerId, err := res.LastInsertId()
+					if err != nil {
+						return err
+					}
+
+					// add new media server to all routers
+					results, err := db.Query("SELECT id FROM sip_routers;")
+					if err != nil {
+						return err
+					}
+					for results.Next() {
+						var id string
+						err = results.Scan(&id);
+						if err != nil {
+							return err
+						}
+
+						stmt, err := db.Prepare("INSERT INTO sip_routers_media_servers (`router_id`, `server_id`, `created_at`, `updated_at`) VALUES (?,?,?,?)")
+						if err != nil {
+							return err
+						}
+						defer stmt.Close()
+						_, err =stmt.Exec( id,mediaServerId,now,now )
+						if err != nil {
+							return err
+						}
+					}
+					defer stmt.Close()
+				}
+				if ( err != nil ) {  //another error
+					return err
+				}
+			case "Deleted": // downscale
+				var id string
+				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					return err
+				}
+				fmt.Println("deleting media server " + name)
+				stmt, err := db.Prepare("DELETE FROM media_servers WHERE `k8s_pod_id` =?")
+
+
+				if err != nil {
+					return err
+				}
+				defer stmt.Close()
+		}
+	} else if component == "opensips" {
+		switch ; phase {
+			case "Running": // upscale
+				var id string
+				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					fmt.Println("creating SIP router " + name)
+					now :=time.Now()
+					stmt, err := db.Prepare("INSERT INTO sip_routers (`k8s_pod_id`, `name`, `ip_address`, `ip_address_range`, `private_ip_address`, `private_ip_range`, `region`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+
+
+					if err != nil {
+						return err
+					}
+					defer stmt.Close()
+					// check router IP
+					ip, err := GetContainerIP( clientset, name, ns )
+					if err != nil {
+						return err
+					}
+					ipRange:="/32"
+					_, err = stmt.Exec( name,name, ip, ipRange, ip, ipRange, region, now,now )
+					if err != nil {
+						return err
+					}
+				}
+			case "Deleted": // downscale
+				var id string
+				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// doesnt exist
+					return err
+				}
+				fmt.Println("deleting SIP router " + name)
+				stmt, err := db.Prepare("DELETE FROM sip_routers WHERE `k8s_pod_id` =?")
+
+
+				if err != nil {
+					return err
+				}
+				defer stmt.Close()
+		}
+	}
+	return nil
+}
 func processEvent(w http.ResponseWriter, r *http.Request) {
   w.Header().Set("Content-Type", "application/json")
+  fmt.Println("received request..")
+  var event Event
   var podResource PodResource
-
-   err := json.NewDecoder(r.Body).Decode(&podResource)
+  var err error
+  _, err = formatRequest(r)
  if err != nil {
 		fmt.Println("Could not process json. error: " + err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return 
 	}
+   err = json.NewDecoder(r.Body).Decode(&event)
+ if err != nil {
+		fmt.Println("Could not process json. error: " + err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return 
+	}
+
+	data, err := json.Marshal(podResource)
+
+	fmt.Println(string(data))
+	podResource = event.Pod
 	clientset, err := createK8sConfig()
  if err != nil {
 		fmt.Println("Could not get k8s config. error: " + err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return 
 	}
-	region := os.Getenv("LINEBLOCS_REGION")
-	component := podResource.metadata.labels["component"]
-	name := podResource.metadata.name
-	ns := podResource.metadata.namespace
-	if component == "asterisk" {
-		switch phase := podResource.phase; phase {
-			case "Running": // upscale
-				var id string
-				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", )
-				err := row.Scan(&id)
-				if ( err == sql.ErrNoRows ) {  //create conference
-					// create it
-					stmt, err := db.Prepare("INSERT INTO media_servers (`k8s_pod_id`, `name`, `ip_address`, `ip_address_range`, `private_ip_address`, `private_ip_range`) VALUES (?, ?, ?, ?, ?, ?)")
+	//region := os.Getenv("LINEBLOCS_REGION")
+	component := podResource.Metadata.Labels["component"]
+	//hash := podResource.Metadata.Labels["pod-template-hash"]
+	//name := podResource.Metadata.GenerateName + "-" + hash
+	name := podResource.Metadata.Name
+	ns := podResource.Metadata.Namespace
+	phase := podResource.Status.Phase
+
+	if ns != "voip" {
+		fmt.Println("namespace is not voip, skipping...\r\n")
+		return
+	}
+
+	//fmt.Println( "incoming request: " )
+	//fmt.Println( txt )
+	fmt.Println("component is: " + component)
+	fmt.Println("phase is: " + phase)
+
+	err = synchronizePodWithDatabase(clientset, component, name, ns, phase)
+	if err != nil {
+		fmt.Println("error occured: " + err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
 
 
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					// check media server IP
-					ip, err := GetContainerIP( clientset, name, ns )
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					ipRange:="/32"
-					res, err := stmt.Exec( name, ip, ipRange, ip, ipRange )
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					mediaServerId, err := res.LastInsertId()
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
+func pollForPodChanges() {
 
-					// add new media server to all routers
-					results, err := db.Query("SELECT id FROM sip_routes;")
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					for results.Next() {
-						var id string
-						err = results.Scan(&id);
-						if err != nil {
-							fmt.Println("error occured: " + err.Error())
-							w.WriteHeader(http.StatusInternalServerError)
-							return
-						}
-
-						stmt, err := db.Prepare("INSERT INTO sip_routers_media_servers (`router_id`, `media_server_id`) VALUES (?,?)")
-						if err != nil {
-							fmt.Println("error occured: " + err.Error())
-							w.WriteHeader(http.StatusInternalServerError)
-							return
-						}
-						defer stmt.Close()
-						_, err =stmt.Exec( id,mediaServerId )
-						if err != nil {
-							fmt.Println("error occured: " + err.Error())
-							w.WriteHeader(http.StatusInternalServerError)
-							return
-						}
-					}
-					defer stmt.Close()
-				}
-				if ( err != nil ) {  //another error
-					fmt.Println("error occured: " + err.Error())
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-			case "Terminated": // downscale
-				var id string
-				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", )
-				err := row.Scan(&id)
-				if ( err == sql.ErrNoRows ) {  //create conference
-					// create it
-					fmt.Println("error occured: " + err.Error())
-					w.WriteHeader(http.StatusInternalServerError)
-				}
-				stmt, err := db.Prepare("DELETE FROM media_servers WHERE `k8s_pod_id` =?")
-
-
-				if err != nil {
-					fmt.Println("error occured: " + err.Error())
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				defer stmt.Close()
+	clientset, err := createK8sConfig()
+ 	if err != nil {
+		 fmt.Println("error: " + err.Error())
+		return 
+	}
+	for ;; {
+		ctx :=context.Background()
+		namespace:="voip"
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Println("error: " + err.Error())
+			return
 		}
-	} else if component == "opensips" {
-		switch phase := podResource.phase; phase {
-			case "Running": // upscale
-				var id string
-				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
-				err := row.Scan(&id)
-				if ( err == sql.ErrNoRows ) {  //create conference
-					// create it
-					stmt, err := db.Prepare("INSERT INTO sip_routers (`k8s_pod_id`, `name`, `ip_address`, `ip_address_range`, `private_ip_address`, `private_ip_range`, `region`) VALUES (?, ?, ?, ?, ?, ?)")
-
-
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					defer stmt.Close()
-					// check router IP
-					ip, err := GetContainerIP( clientset, name, ns )
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					ipRange:="/32"
-					_, err = stmt.Exec( name, ip, ipRange, ip, ipRange, region )
-					if err != nil {
-						fmt.Println("error occured: " + err.Error())
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-				}
-			case "Terminated": // downscale
-				var id string
-				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
-				err := row.Scan(&id)
-				if ( err == sql.ErrNoRows ) {  //create conference
-					// doesnt exist
-					fmt.Println("error occured: " + err.Error())
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				stmt, err := db.Prepare("DELETE FROM sip_routers WHERE `k8s_pod_id` =?")
-
-
-				if err != nil {
-					fmt.Println("error occured: " + err.Error())
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				defer stmt.Close()
+		for _, podResource := range pods.Items {
+			fmt.Println("pod: " + podResource.Name)
+			component := podResource.ObjectMeta.Labels["component"]
+			fmt.Println("component: " + component)
+			name := podResource.Name
+			phase := string( podResource.Status.Phase )
+			fmt.Println("phase: " + phase)
+			err = synchronizePodWithDatabase(clientset, component, name, "voip", phase)
+			if err != nil {
+				fmt.Println("error: " + err.Error())
+				continue
+			}
 		}
+		time.Sleep( time.Duration( time.Second * 5 ))
 	}
 }
 func main() {
@@ -302,11 +370,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	go pollForPodChanges()
     r := mux.NewRouter()
     // Routes consist of a path and a handler function.
 	r.HandleFunc("/processEvent", processEvent).Methods("POST");
 	// Bind to a port and pass our router in
 	loggedRouter := handlers.LoggingHandler(os.Stdout, r)
 	log.Print("Starting server...")
-    log.Fatal(http.ListenAndServe(":80", loggedRouter))
+    log.Fatal(http.ListenAndServe(":8000", loggedRouter))
 }
