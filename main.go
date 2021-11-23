@@ -88,6 +88,14 @@ func createK8sConfig() (kubernetes.Interface, error) {
 	}
 	return clientset, nil
 }
+
+func createDNSRecords(name, ip, region string) (error) {
+	return nil
+}
+
+func removeDNSRecords(name, ip, region string) (error) {
+	return nil
+}
 func GetContainerIP(clientset kubernetes.Interface, podName, namespace string) (string, error) {
     // creates the in-cluster config
 	fmt.Println("searching in NS: " + namespace)
@@ -255,11 +263,16 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 					if err != nil {
 						return err
 					}
+					err = createDNSRecords(name, ip, region)
+					if err != nil {
+						return err
+					}
 				}
 			case "Deleted": // downscale
 				var id string
-				row:=db.QueryRow("select id from sip_routers where k8s_pod_id = ?", )
-				err := row.Scan(&id)
+				var ipAddr string
+				row:=db.QueryRow("select id, ip_address from sip_routers where k8s_pod_id = ?", )
+				err := row.Scan(&id, &ipAddr)
 				if ( err == sql.ErrNoRows ) {  //create conference
 					// doesnt exist
 					return err
@@ -272,6 +285,10 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 					return err
 				}
 				defer stmt.Close()
+				err = removeDNSRecords(name, ipAddr, region)
+				if err != nil {
+					return err
+				}
 		}
 	}
 	return nil
