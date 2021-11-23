@@ -192,8 +192,8 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 						return err
 					}
 
-					// add new media server to all routers
-					results, err := db.Query("SELECT id FROM sip_routers;")
+					// add new media server to routers located in region
+					results, err := db.Query("SELECT id FROM sip_routers WHERE region = ?;", region)
 					if err != nil {
 						return err
 					}
