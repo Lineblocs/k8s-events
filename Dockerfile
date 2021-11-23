@@ -6,7 +6,7 @@ FROM golang:1.17.1
 # Add Maintainer Info
 LABEL maintahe Go app
 RUN go build -o main main.go
-iner="Nadir Hamid <matrix.nad@gmail.com>"
+LABEL maintainer="Nadir Hamid <matrix.nad@gmail.com>"
 
 # Set the Current Working Directory inside the container
 WORKDIR /app
