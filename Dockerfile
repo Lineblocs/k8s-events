@@ -4,14 +4,12 @@
 FROM golang:1.17.1
 
 # Add Maintainer Info
-LABEL maintahe Go app
-RUN go build -o main main.go
 LABEL maintainer="Nadir Hamid <matrix.nad@gmail.com>"
 
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
-RUN apt-get -y update && apt-get install -y bash netdiscover
+RUN apt-get -y update && apt-get install -y bash
 # Copy go mod and sum files
 COPY go.mod go.sum ./
 
@@ -21,14 +19,14 @@ ADD .gitconfig /root/.gitconfig
 #RUN echo "Host bitbucket.org\n\tStrictHostKeyChecking no\n" >> /root/.ssh/config
 #RUN git config --global url.ssh://git@bitbucket.org/.insteadOf https://bitbucket.org/
 # Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
-RUN GOPRIVATE=bitbucket.org/infinitet3chGOPRIVATE=bitbucket.org/infinitet3ch go mod download
+RUN GOPRIVATE=bitbucket.org/infinitet3ch go mod download
 
 # Copy the source from the current directory to the Working Directory inside the container
 COPY . .
 
 # Build t
 # Expose port 80 to the outside world (used for GRPC)
-EXPOSE 8018
+EXPOSE 8000
 
 RUN ls -a /app/
 # Command to run the executable
