@@ -393,7 +393,7 @@ func pollForPodChanges() {
 		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			fmt.Println("error: " + err.Error())
-			return
+			continue
 		}
 		for _, podResource := range pods.Items {
 			fmt.Println("pod: " + podResource.Name)
