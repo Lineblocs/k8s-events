@@ -9,8 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httputil"
-
-		"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
+		_ "k8s.io/client-go/tools/clientcmd"
 	"encoding/json"
 			"github.com/gorilla/mux"
 	"github.com/gorilla/handlers"
@@ -73,12 +73,18 @@ func GetNodeByName(clientset kubernetes.Interface, name string, namespace string
 }
 
 func createK8sConfig() (kubernetes.Interface, error) {
+	/*
 	var kubeconfig string
 	kubeconfig= "/root/.kube/config"
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, err
+	}
+	*/
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil,err
 	}
 
 	// create the clientset
