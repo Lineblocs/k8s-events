@@ -239,7 +239,7 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 				if ( err != nil ) {  //another error
 					return err
 				}
-			case "Deleted","Terminating": // downscale
+			case "Deleted","Terminating","CrashLoopBackOff": // downscale
 				var id string
 				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", )
 				err := row.Scan(&id)
@@ -293,7 +293,7 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 						return err
 					}
 				}
-			case "Deleted","Terminating": // downscale
+			case "Deleted","Terminating","CrashLoopBackOff": // downscale
 				var id string
 				var ipAddr string
 				row:=db.QueryRow("select id, ip_address from sip_routers where k8s_pod_id = ?", )
@@ -420,6 +420,15 @@ func pollForPodChanges() {
 				name := podResource.Name
 				if name==podId {
 					found=true
+					phase := string(podResource.Status.Phase)
+
+					component:="asterisk"
+					err = synchronizePodWithDatabase(clientset, component, podId, "voip", phase)
+					if err != nil {
+						fmt.Println("error: " + err.Error())
+						continue
+					}
+
 				}
 			}
 			if !found {
