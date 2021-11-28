@@ -156,6 +156,26 @@ func formatRequest(r *http.Request) (string, error) {
 
 }
 
+func getMediaServers() ([]string, error) {
+
+	pods:=make([]string,0)
+	results, err := db.Query("SELECT k8s_pod_id FROM media_servers")
+	if err != nil {
+		return pods, err
+	}
+	defer results.Close()
+
+	for results.Next() {
+		var podId string
+		err := results.Scan(&podId)
+		if err != nil {
+			return pods,err
+		}
+		pods=append(pods,podId)
+	}
+	return pods,nil
+}
+
 func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name, ns, phase string) (error) {
 	region := os.Getenv("LINEBLOCS_REGION")
 	if component == "asterisk" {
@@ -219,7 +239,7 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 				if ( err != nil ) {  //another error
 					return err
 				}
-			case "Deleted": // downscale
+			case "Deleted","Terminating": // downscale
 				var id string
 				row:=db.QueryRow("select id from media_servers where k8s_pod_id = ?", )
 				err := row.Scan(&id)
@@ -234,6 +254,11 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 				if err != nil {
 					return err
 				}
+				_, err =stmt.Exec( name )
+				if err != nil {
+					return err
+				}
+
 				defer stmt.Close()
 		}
 	} else if component == "opensips" {
@@ -268,7 +293,7 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 						return err
 					}
 				}
-			case "Deleted": // downscale
+			case "Deleted","Terminating": // downscale
 				var id string
 				var ipAddr string
 				row:=db.QueryRow("select id, ip_address from sip_routers where k8s_pod_id = ?", )
@@ -285,6 +310,12 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 					return err
 				}
 				defer stmt.Close()
+				_, err =stmt.Exec( name )
+				if err != nil {
+					return err
+				}
+
+
 				err = removeDNSRecords(name, ipAddr, region)
 				if err != nil {
 					return err
@@ -377,6 +408,31 @@ func pollForPodChanges() {
 				continue
 			}
 		}
+		servers,err:=getMediaServers()
+		if err != nil {
+			fmt.Println("error: " + err.Error())
+			continue
+		}
+
+		for _, podId := range servers {
+			found:=false
+			for _, podResource := range pods.Items {
+				name := podResource.Name
+				if name==podId {
+					found=true
+				}
+			}
+			if !found {
+				component:="asterisk"
+				err = synchronizePodWithDatabase(clientset, component, podId, "voip", "Deleted")
+				if err != nil {
+					fmt.Println("error: " + err.Error())
+					continue
+				}
+
+			}
+		}
+
 		time.Sleep( time.Duration( time.Second * 5 ))
 	}
 }
