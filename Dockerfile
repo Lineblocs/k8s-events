@@ -24,9 +24,8 @@ RUN GOPRIVATE=bitbucket.org/infinitet3ch go mod download
 # Copy the source from the current directory to the Working Directory inside the container
 COPY . .
 
-# Build t
-# Expose port 80 to the outside world (used for GRPC)
-EXPOSE 8000
+# Build the Go app
+RUN go build -o main main.go
 
 RUN ls -a /app/
 # Command to run the executable
