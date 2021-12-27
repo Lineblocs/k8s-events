@@ -267,6 +267,62 @@ func synchronizePodWithDatabase(clientset kubernetes.Interface, component, name,
 
 				defer stmt.Close()
 		}
+	} else if component == "rtpproxy" {
+		switch ; phase {
+			case "Running": // upscale
+				var id string
+				row:=db.QueryRow("select id from rtpproxy_sockets where k8s_pod_id = ?", name)
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					fmt.Println("creating rtp proxy " + name)
+					stmt, err := db.Prepare("INSERT INTO rtpproxy_sockets (`k8s_pod_id`, `rtpproxy_sock`, `set_id`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?)")
+
+
+					if err != nil {
+						return err
+					}
+					defer stmt.Close()
+					// check media server IP
+					ip, err := GetContainerIP( clientset, name, ns )
+					if err != nil {
+						return err
+					}
+
+					// add 5160 for media servers
+					sock := "udp:" + ip + ":7722"
+					setId := "1"
+					now :=time.Now()
+					_, err = stmt.Exec( name,sock,setId, now,now )
+					if err != nil {
+						return err
+					}
+				}
+				if ( err != nil ) {  //another error
+					return err
+				}
+			case "Deleted","Terminating","CrashLoopBackOff": // downscale
+				var id string
+				row:=db.QueryRow("select id from rtpproxy_sockets where k8s_pod_id = ?", )
+				err := row.Scan(&id)
+				if ( err == sql.ErrNoRows ) {  //create conference
+					// create it
+					return err
+				}
+				fmt.Println("deleting rtp proxy " + name)
+				stmt, err := db.Prepare("DELETE FROM rtpproxy_sockets WHERE `k8s_pod_id` =?")
+
+
+				if err != nil {
+					return err
+				}
+				_, err =stmt.Exec( name )
+				if err != nil {
+					return err
+				}
+
+				defer stmt.Close()
+		}
 	} else if component == "opensips" {
 		switch ; phase {
 			case "Running": // upscale
