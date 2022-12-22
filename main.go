@@ -15,7 +15,7 @@ import (
 			"github.com/gorilla/mux"
 	"github.com/gorilla/handlers"
 	_ "github.com/go-sql-driver/mysql"
-	lineblocs "bitbucket.org/infinitet3ch/lineblocs-go-helpers"
+	lineblocs "github.com/Lineblocs/go-helpers"
 	"k8s.io/client-go/kubernetes"
     v1 "k8s.io/api/core/v1"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
